@@ -1,0 +1,320 @@
+@page "/groups"
+@using System.ComponentModel.DataAnnotations
+@using AeroNexus.ForecastStudio.Domain.Entities
+@using AeroNexus.ForecastStudio.Domain.Services
+@using AeroNexus.ForecastStudio.Infrastructure
+@using Microsoft.AspNetCore.Components.Forms
+@using Microsoft.EntityFrameworkCore
+@inject AeroNexusDbContext DbContext
+@inject IGroupService GroupService
+
+<PageTitle>Group Editor</PageTitle>
+
+<h1 class="mb-4">Group Editor</h1>
+
+@if (!_scenarios.Any())
+{
+    <div class="alert alert-warning">Create a scenario first to manage groups.</div>
+}
+else
+{
+    <div class="row g-4">
+        <div class="col-lg-4">
+            <div class="card h-100">
+                <div class="card-header">Scenarios</div>
+                <div class="card-body">
+                    <label class="form-label" for="scenarioSelect">Select scenario</label>
+                    <select id="scenarioSelect" class="form-select" value="@_selectedScenarioId" @onchange="OnScenarioChanged">
+                        @foreach (var scenario in _scenarios)
+                        {
+                            <option value="@scenario.Id">@scenario.Name</option>
+                        }
+                    </select>
+                    <p class="text-muted mt-3">Groups belong to a single scenario but can be marked as shared for reuse.</p>
+                    <button class="btn btn-primary mt-2" @onclick="StartNewGroup">New group</button>
+                </div>
+            </div>
+        </div>
+        <div class="col-lg-8">
+            <div class="card mb-3">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <span>Groups</span>
+                    <span class="badge bg-secondary">@_groups.Count</span>
+                </div>
+                <div class="card-body p-0">
+                    @if (!_groups.Any())
+                    {
+                        <div class="p-3 text-muted">No groups yet for this scenario.</div>
+                    }
+                    else
+                    {
+                        <div class="table-responsive">
+                            <table class="table table-striped mb-0">
+                                <thead>
+                                    <tr>
+                                        <th>Name</th>
+                                        <th>Shared</th>
+                                        <th>Conditions</th>
+                                        <th></th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    @foreach (var group in _groups)
+                                    {
+                                        <tr>
+                                            <td>@group.Name</td>
+                                            <td>@(group.IsShared ? "Yes" : "No")</td>
+                                            <td>
+                                                <ul class="mb-0">
+                                                    @foreach (var condition in group.Conditions.OrderBy(c => c.Order))
+                                                    {
+                                                        <li><code>@condition.Field</code> @condition.Operator @condition.Value</li>
+                                                    }
+                                                </ul>
+                                            </td>
+                                            <td class="text-end">
+                                                <button class="btn btn-sm btn-outline-primary" @onclick="() => EditGroup(group)">Edit</button>
+                                                <button class="btn btn-sm btn-outline-danger ms-1" @onclick="async () => await DeleteGroupAsync(group.Id)">Delete</button>
+                                            </td>
+                                        </tr>
+                                    }
+                                </tbody>
+                            </table>
+                        </div>
+                    }
+                </div>
+            </div>
+
+            @if (_editingGroup is not null)
+            {
+                <div class="card">
+                    <div class="card-header">@(_editingGroup.Id == Guid.Empty ? "New group" : "Edit group")</div>
+                    <div class="card-body">
+                        <EditForm Model="_editingGroup" OnValidSubmit="SaveGroupAsync">
+                            <DataAnnotationsValidator />
+                            <ValidationSummary />
+
+                            <div class="mb-3">
+                                <label class="form-label" for="groupName">Name</label>
+                                <InputText id="groupName" class="form-control" @bind-Value="_editingGroup.Name" />
+                            </div>
+                            <div class="mb-3">
+                                <label class="form-label" for="groupDescription">Description</label>
+                                <InputTextArea id="groupDescription" class="form-control" @bind-Value="_editingGroup.Description" />
+                            </div>
+                            <div class="form-check form-switch mb-3">
+                                <InputCheckbox class="form-check-input" id="shared" @bind-Value="_editingGroup.IsShared" />
+                                <label class="form-check-label" for="shared">Shared across scenarios</label>
+                            </div>
+
+                            <h5>Conditions</h5>
+                            @if (!_editingGroup.Conditions.Any())
+                            {
+                                <p class="text-muted">Add at least one condition to define the group membership.</p>
+                            }
+                            <div class="list-group mb-3">
+                                @for (var index = 0; index < _editingGroup.Conditions.Count; index++)
+                                {
+                                    var condition = _editingGroup.Conditions[index];
+                                    <div class="list-group-item">
+                                        <div class="row g-2 align-items-end">
+                                            <div class="col-md-4">
+                                                <label class="form-label">Field</label>
+                                                <InputText class="form-control" @bind-Value="condition.Field" />
+                                            </div>
+                                            <div class="col-md-3">
+                                                <label class="form-label">Operator</label>
+                                                <InputText class="form-control" @bind-Value="condition.Operator" />
+                                            </div>
+                                            <div class="col-md-4">
+                                                <label class="form-label">Value</label>
+                                                <InputText class="form-control" @bind-Value="condition.Value" />
+                                            </div>
+                                            <div class="col-md-1 text-end">
+                                                <button type="button" class="btn btn-sm btn-outline-danger" @onclick="() => RemoveCondition(index)">×</button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                }
+                            </div>
+                            <button type="button" class="btn btn-outline-secondary mb-3" @onclick="AddCondition">Add condition</button>
+
+                            <div class="d-flex justify-content-end">
+                                <button type="button" class="btn btn-outline-secondary me-2" @onclick="CancelEditing">Cancel</button>
+                                <button type="submit" class="btn btn-primary">Save group</button>
+                            </div>
+                        </EditForm>
+                    </div>
+                </div>
+            }
+        </div>
+    </div>
+}
+
+@code {
+    private readonly List<Scenario> _scenarios = new();
+    private readonly List<GroupDefinition> _groups = new();
+    private Guid _selectedScenarioId;
+    private GroupEditorModel? _editingGroup;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _scenarios.AddRange(await DbContext.Scenarios.OrderBy(s => s.Name).ToListAsync());
+        if (_scenarios.Any())
+        {
+            _selectedScenarioId = _scenarios.First().Id;
+            await LoadGroupsAsync();
+        }
+    }
+
+    private async Task LoadGroupsAsync()
+    {
+        _groups.Clear();
+        if (_selectedScenarioId == Guid.Empty)
+        {
+            return;
+        }
+
+        var groups = await GroupService.GetGroupsAsync(_selectedScenarioId);
+        _groups.AddRange(groups);
+        StateHasChanged();
+    }
+
+    private async Task DeleteGroupAsync(Guid groupId)
+    {
+        await GroupService.DeleteGroupAsync(groupId);
+        await LoadGroupsAsync();
+        CancelEditing();
+        StateHasChanged();
+    }
+
+    private void EditGroup(GroupDefinition group)
+    {
+        _editingGroup = new GroupEditorModel
+        {
+            Id = group.Id,
+            Name = group.Name,
+            Description = group.Description,
+            IsShared = group.IsShared,
+            Conditions = group.Conditions
+                .OrderBy(condition => condition.Order)
+                .Select(condition => new ConditionModel
+                {
+                    Field = condition.Field,
+                    Operator = condition.Operator,
+                    Value = condition.Value
+                })
+                .ToList()
+        };
+    }
+
+    private void StartNewGroup()
+    {
+        _editingGroup = new GroupEditorModel
+        {
+            Id = Guid.Empty,
+            Conditions = new List<ConditionModel>
+            {
+                new() { Field = "Airline.Code", Operator = "Equals", Value = "" }
+            }
+        };
+        StateHasChanged();
+    }
+
+    private void AddCondition()
+    {
+        _editingGroup?.Conditions.Add(new ConditionModel { Field = "", Operator = "Equals", Value = "" });
+        StateHasChanged();
+    }
+
+    private void RemoveCondition(int index)
+    {
+        if (_editingGroup is null)
+        {
+            return;
+        }
+
+        if (index >= 0 && index < _editingGroup.Conditions.Count)
+        {
+            _editingGroup.Conditions.RemoveAt(index);
+        }
+
+        StateHasChanged();
+    }
+
+    private void CancelEditing()
+    {
+        _editingGroup = null;
+        StateHasChanged();
+    }
+
+    private async Task SaveGroupAsync()
+    {
+        if (_editingGroup is null)
+        {
+            return;
+        }
+
+        var conditions = _editingGroup.Conditions
+            .Select(condition => new GroupCondition
+            {
+                Field = condition.Field,
+                Operator = condition.Operator,
+                Value = condition.Value
+            })
+            .ToList();
+
+        if (_editingGroup.Id == Guid.Empty)
+        {
+            await GroupService.CreateGroupAsync(_selectedScenarioId, _editingGroup.Name, _editingGroup.Description, _editingGroup.IsShared, conditions);
+        }
+        else
+        {
+            await GroupService.UpdateGroupAsync(_editingGroup.Id, _editingGroup.Name, _editingGroup.Description, _editingGroup.IsShared, conditions);
+        }
+
+        await LoadGroupsAsync();
+        CancelEditing();
+    }
+
+    private async Task OnScenarioChanged(ChangeEventArgs args)
+    {
+        if (args.Value is string scenarioId && Guid.TryParse(scenarioId, out var parsed))
+        {
+            _selectedScenarioId = parsed;
+            await LoadGroupsAsync();
+            CancelEditing();
+            StateHasChanged();
+        }
+    }
+
+    private sealed class GroupEditorModel
+    {
+        public Guid Id { get; set; }
+
+        [Required]
+        [StringLength(200)]
+        public string Name { get; set; } = string.Empty;
+
+        [StringLength(1000)]
+        public string? Description { get; set; }
+            = string.Empty;
+
+        public bool IsShared { get; set; }
+            = true;
+
+        public List<ConditionModel> Conditions { get; set; } = new();
+    }
+
+    private sealed class ConditionModel
+    {
+        [Required]
+        public string Field { get; set; } = string.Empty;
+
+        [Required]
+        public string Operator { get; set; } = "Equals";
+
+        [Required]
+        public string Value { get; set; } = string.Empty;
+    }
+}

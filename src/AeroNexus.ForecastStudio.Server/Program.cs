@@ -1,4 +1,6 @@
+using AeroNexus.ForecastStudio.Domain.Services;
 using AeroNexus.ForecastStudio.Infrastructure;
+using AeroNexus.ForecastStudio.Infrastructure.Services;
 using Microsoft.AspNetCore.Components;
 using Microsoft.AspNetCore.Components.Web;
 using Microsoft.AspNetCore.Diagnostics.EntityFrameworkCore;
@@ -14,6 +16,9 @@ var connectionString = builder.Configuration.GetConnectionString("DefaultConnect
 
 builder.Services.AddDbContext<AeroNexusDbContext>(options =>
     options.UseSqlServer(connectionString));
+
+builder.Services.AddScoped<IGroupService, GroupService>();
+builder.Services.AddScoped<IImportService, ImportService>();
 
 builder.Services.AddDatabaseDeveloperPageExceptionFilter();
 

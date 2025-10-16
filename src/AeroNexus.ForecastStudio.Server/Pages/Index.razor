@@ -5,19 +5,37 @@
 <h1>Welcome to AeroNexus Forecast Studio</h1>
 
 <p class="lead">
-    This Blazor Server application is the foundation for the replacement of Beontra BTactical.
-    The current iteration focuses on establishing the solution skeleton, shared layout, and
-    infrastructure wiring for upcoming modules such as automated imports, scenario editing,
-    and forecasting workbenches.
+    The first iteration delivers interactive experiences for group management and the
+    statistical and flight schedule import wizards. Use the navigation bar to explore
+    these capabilities as we continue modernising the BTactical workflows.
 </p>
 
-<div class="card">
-    <div class="card-body">
-        <h2 class="h5">What&apos;s next?</h2>
-        <ul>
-            <li>Implement authentication and authorization aligned with airport planning roles.</li>
-            <li>Build the import and data management flows outlined in the product specification.</li>
-            <li>Deliver scenario editing workspaces and forecasting automation.</li>
-        </ul>
+<div class="row g-3">
+    <div class="col-md-4">
+        <div class="card h-100">
+            <div class="card-body">
+                <h2 class="h5">Group Editor</h2>
+                <p>Create reusable filter groups per scenario with ordered condition lists.</p>
+                <NavLink class="btn btn-outline-primary" href="/groups">Open group editor</NavLink>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div class="card h-100">
+            <div class="card-body">
+                <h2 class="h5">Statistical imports</h2>
+                <p>Validate, map, and persist airport statistics for comparison baselines.</p>
+                <NavLink class="btn btn-outline-primary" href="/imports/statistics">Launch wizard</NavLink>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div class="card h-100">
+            <div class="card-body">
+                <h2 class="h5">Schedule imports</h2>
+                <p>Walk through multi-step schedule ingestion with preview and auto-referencing.</p>
+                <NavLink class="btn btn-outline-primary" href="/imports/schedule">Launch wizard</NavLink>
+            </div>
+        </div>
     </div>
 </div>

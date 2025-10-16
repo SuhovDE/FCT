@@ -1,0 +1,437 @@
+@page "/imports/schedule"
+@using System.ComponentModel.DataAnnotations
+@using AeroNexus.ForecastStudio.Domain.Entities
+@using AeroNexus.ForecastStudio.Domain.Services
+@using AeroNexus.ForecastStudio.Infrastructure
+@using Microsoft.AspNetCore.Components.Forms
+@using Microsoft.EntityFrameworkCore
+@inject AeroNexusDbContext DbContext
+@inject IImportService ImportService
+@inject IGroupService GroupService
+@inject NavigationManager Navigation
+
+<PageTitle>Flight Schedule Import</PageTitle>
+
+<h1 class="mb-4">Flight Schedule Import</h1>
+
+@if (_loading)
+{
+    <div class="alert alert-info">Processing schedule import...</div>
+}
+else if (!_scenarios.Any())
+{
+    <div class="alert alert-warning">Create a scenario before launching the schedule import wizard.</div>
+}
+else
+{
+    <EditForm Model="_form" OnValidSubmit="HandleNextAsync">
+        <DataAnnotationsValidator />
+        <ValidationSummary />
+
+        @switch (_step)
+        {
+            case 1:
+                <div class="card mb-3">
+                    <div class="card-header">Step 1 · Import details</div>
+                    <div class="card-body">
+                        <div class="mb-3">
+                            <label class="form-label" for="scenario">Scenario</label>
+                            <InputSelect id="scenario" class="form-select" @bind-Value="SelectedScenarioId">
+                                @foreach (var scenario in _scenarios)
+                                {
+                                    <option value="@scenario.Id">@scenario.Name (@scenario.StartDate:yyyy-MM-dd → @scenario.EndDate:yyyy-MM-dd)</option>
+                                }
+                            </InputSelect>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label" for="name">Import name</label>
+                            <InputText id="name" class="form-control" @bind-Value="_form.Name" />
+                        </div>
+                    </div>
+                </div>
+                break;
+            case 2:
+                <div class="card mb-3">
+                    <div class="card-header">Step 2 · Upload schedule</div>
+                    <div class="card-body">
+                        <p>Upload the schedule file (.csv or .zip). The wizard validates mandatory fields like flight number, origin, destination, and departure time.</p>
+                        <InputFile OnChange="HandleFileSelectedAsync" />
+                        @if (_validationErrors.Any())
+                        {
+                            <div class="alert alert-danger mt-3">
+                                <p class="fw-bold">Validation issues</p>
+                                <ul>
+                                    @foreach (var error in _validationErrors)
+                                    {
+                                        <li>@error</li>
+                                    }
+                                </ul>
+                            </div>
+                        }
+                        else if (_fileName is not null)
+                        {
+                            <div class="alert alert-success mt-3">File <strong>@_fileName</strong> passed validation.</div>
+                        }
+                    </div>
+                </div>
+                break;
+            case 3:
+                <div class="card mb-3">
+                    <div class="card-header">Step 3 · Field mapping</div>
+                    <div class="card-body">
+                        <p>Confirm how source columns map to AeroNexus fields. Update the target field if the automatic guess does not align with your schema.</p>
+                        <div class="table-responsive">
+                            <table class="table table-striped">
+                                <thead>
+                                    <tr>
+                                        <th>Source column</th>
+                                        <th>Target field</th>
+                                        <th>Required</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    @foreach (var mapping in _columnMappings)
+                                    {
+                                        <tr>
+                                            <td>@mapping.SourceColumn</td>
+                                            <td><InputText class="form-control" @bind-Value="mapping.TargetField" /></td>
+                                            <td><input class="form-check-input" type="checkbox" disabled value="true" checked="@mapping.IsRequired" /></td>
+                                        </tr>
+                                    }
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+                break;
+            case 4:
+                <div class="card mb-3">
+                    <div class="card-header">Step 4 · Filters &amp; rules</div>
+                    <div class="card-body">
+                        <div class="row g-3">
+                            <div class="col-md-6">
+                                <label class="form-label" for="start">Start date</label>
+                                <InputDate id="start" class="form-control" @bind-Value="_form.TargetStart" />
+                            </div>
+                            <div class="col-md-6">
+                                <label class="form-label" for="end">End date</label>
+                                <InputDate id="end" class="form-control" @bind-Value="_form.TargetEnd" />
+                            </div>
+                        </div>
+                        <div class="row g-3 mt-1">
+                            <div class="col-md-6">
+                                <label class="form-label" for="group">Group filter</label>
+                                <InputSelect id="group" class="form-select" @bind-Value="_form.SelectedGroupId">
+                                    <option value="">All flights</option>
+                                    @foreach (var group in _groups)
+                                    {
+                                        <option value="@group.Id.ToString()">@group.Name</option>
+                                    }
+                                </InputSelect>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="form-check mt-4">
+                                    <InputCheckbox class="form-check-input" @bind-Value="_form.RemoveExisting" />
+                                    <label class="form-check-label">Remove existing flights in the target window before import</label>
+                                </div>
+                                <div class="form-check mt-2">
+                                    <InputCheckbox class="form-check-input" @bind-Value="_form.ApplyBusinessRules" />
+                                    <label class="form-check-label">Apply system business rules during import</label>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="mt-3">
+                            <label class="form-label">Comparison fields</label>
+                            <InputText class="form-control" @bind-Value="_form.ComparisonFields" />
+                            <div class="form-text">Comma-separated list of fields to consider when comparing existing flights (e.g. flight_number,departure,arrival).</div>
+                        </div>
+                    </div>
+                </div>
+                break;
+            case 5:
+                <div class="card mb-3">
+                    <div class="card-header">Step 5 · Preview comparison</div>
+                    <div class="card-body">
+                        @if (_preview is null)
+                        {
+                            <div class="alert alert-info">Generate a preview to review new, updated, cancelled, and duplicate flights.</div>
+                        }
+                        else
+                        {
+                            <div class="row text-center">
+                                <div class="col">
+                                    <div class="display-6">@_preview.Value.NewFlights</div>
+                                    <p>New flights</p>
+                                </div>
+                                <div class="col">
+                                    <div class="display-6">@_preview.Value.UpdatedFlights</div>
+                                    <p>Updated flights</p>
+                                </div>
+                                <div class="col">
+                                    <div class="display-6">@_preview.Value.CancelledFlights</div>
+                                    <p>Potential cancellations</p>
+                                </div>
+                                <div class="col">
+                                    <div class="display-6">@_preview.Value.DuplicateFlights</div>
+                                    <p>Duplicates detected</p>
+                                </div>
+                            </div>
+                        }
+                    </div>
+                </div>
+                break;
+            case 6:
+                <div class="card mb-3">
+                    <div class="card-header">Step 6 · Summary</div>
+                    <div class="card-body">
+                        <p>
+                            Import <strong>@_form.Name</strong> is configured for scenario
+                            <strong>@_scenarios.First(s => s.Id == _form.ScenarioId).Name</strong>.
+                        </p>
+                        <p>
+                            Remove existing flights: @_form.RemoveExisting.ToString(). Apply business rules: @_form.ApplyBusinessRules.ToString().
+                        </p>
+                        @if (_preview is not null)
+                        {
+                            <p>Preview totals: @_preview.Value.NewFlights new, @_preview.Value.UpdatedFlights updated, @_preview.Value.CancelledFlights cancelled, @_preview.Value.DuplicateFlights duplicates skipped.</p>
+                        }
+                        <p>Confirm to apply the schedule to the scenario and create placeholder reference data for new airlines and airports automatically.</p>
+                    </div>
+                </div>
+                break;
+        }
+
+        <div class="d-flex justify-content-between">
+            <button type="button" class="btn btn-outline-secondary" disabled="@(_step == 1)" @onclick="PrevStep">Back</button>
+            <button type="submit" class="btn btn-primary">@(_step == 6 ? "Import schedule" : (_step == 5 ? "Generate preview" : "Continue"))</button>
+        </div>
+    </EditForm>
+}
+
+@code {
+    private readonly ScheduleImportForm _form = new();
+    private readonly List<Scenario> _scenarios = new();
+    private readonly List<GroupDefinition> _groups = new();
+    private readonly List<ImportColumnMapping> _columnMappings = new();
+    private readonly List<string> _validationErrors = new();
+
+    private int _step = 1;
+    private bool _loading;
+    private ImportJob? _importJob;
+    private byte[]? _fileBytes;
+    private string? _fileName;
+    private ImportPreviewSummary? _preview;
+    private Guid SelectedScenarioId
+    {
+        get => _form.ScenarioId;
+        set
+        {
+            if (_form.ScenarioId == value)
+            {
+                return;
+            }
+
+            _form.ScenarioId = value;
+            _ = InvokeAsync(async () => await UpdateScenarioAsync(value));
+        }
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        _scenarios.AddRange(await DbContext.Scenarios.OrderBy(s => s.Name).ToListAsync());
+        if (_scenarios.Any())
+        {
+            _form.ScenarioId = _scenarios.First().Id;
+        }
+
+        if (_form.ScenarioId != Guid.Empty)
+        {
+            _groups.AddRange(await GroupService.GetGroupsAsync(_form.ScenarioId));
+        }
+    }
+
+    private async Task UpdateScenarioAsync(Guid scenarioId)
+    {
+        _groups.Clear();
+        if (scenarioId != Guid.Empty)
+        {
+            _groups.AddRange(await GroupService.GetGroupsAsync(scenarioId));
+        }
+
+        _importJob = null;
+        _columnMappings.Clear();
+        _validationErrors.Clear();
+        _preview = null;
+        _form.SelectedGroupId = string.Empty;
+        _step = 1;
+        StateHasChanged();
+    }
+
+    private async Task HandleNextAsync()
+    {
+        switch (_step)
+        {
+            case 1:
+                await EnsureImportJobAsync();
+                _step = 2;
+                break;
+            case 2:
+                if (_validationErrors.Any() || _fileBytes is null || _importJob is null)
+                {
+                    return;
+                }
+
+                await using (var stream = new MemoryStream(_fileBytes))
+                {
+                    var mappings = await ImportService.AnalyseColumnsAsync(_importJob, stream, CancellationToken.None);
+                    _columnMappings.Clear();
+                    _columnMappings.AddRange(mappings);
+                }
+
+                _step = 3;
+                break;
+            case 3:
+                if (_importJob is null)
+                {
+                    return;
+                }
+
+                await ImportService.PersistColumnMappingsAsync(_importJob.Id, _columnMappings, CancellationToken.None);
+                _step = 4;
+                break;
+            case 4:
+                _step = 5;
+                break;
+            case 5:
+                if (_importJob is null || _fileBytes is null)
+                {
+                    return;
+                }
+
+                await using (var stream = new MemoryStream(_fileBytes))
+                {
+                    _preview = await ImportService.BuildSchedulePreviewAsync(
+                        _importJob.Id,
+                        stream,
+                        _form.TargetStart,
+                        _form.TargetEnd,
+                        GetSelectedGroupId(),
+                        CancellationToken.None);
+                }
+
+                _step = 6;
+                break;
+            case 6:
+                if (_importJob is null || _fileBytes is null)
+                {
+                    return;
+                }
+
+                _loading = true;
+                await using (var stream = new MemoryStream(_fileBytes))
+                {
+                    await ImportService.CommitScheduleImportAsync(
+                        _importJob.Id,
+                        stream,
+                        _form.TargetStart,
+                        _form.TargetEnd,
+                        GetSelectedGroupId(),
+                        _form.RemoveExisting,
+                        CancellationToken.None);
+                }
+
+                _loading = false;
+                Navigation.NavigateTo("/imports", true);
+                break;
+        }
+    }
+
+    private async Task HandleFileSelectedAsync(InputFileChangeEventArgs args)
+    {
+        _validationErrors.Clear();
+        _preview = null;
+
+        if (args.File is null)
+        {
+            _fileBytes = null;
+            _fileName = null;
+            return;
+        }
+
+        var file = args.File;
+        await using var buffer = new MemoryStream();
+        await file.OpenReadStream(long.MaxValue).CopyToAsync(buffer);
+        _fileBytes = buffer.ToArray();
+        _fileName = file.Name;
+
+        await EnsureImportJobAsync();
+        if (_importJob is null)
+        {
+            return;
+        }
+
+        await using var stream = new MemoryStream(_fileBytes);
+        var result = await ImportService.ValidateScheduleImportAsync(_importJob, stream, _fileName, CancellationToken.None);
+        if (!result.IsValid)
+        {
+            _validationErrors.AddRange(result.Errors);
+        }
+    }
+
+    private async Task EnsureImportJobAsync()
+    {
+        if (_importJob is not null)
+        {
+            return;
+        }
+
+        if (_form.ScenarioId == Guid.Empty)
+        {
+            return;
+        }
+
+        _importJob = await ImportService.CreateImportJobAsync(_form.ScenarioId, _form.Name, ImportType.FlightSchedule, CancellationToken.None);
+    }
+
+    private void PrevStep()
+    {
+        if (_step == 1)
+        {
+            return;
+        }
+
+        _step--;
+    }
+
+    private Guid? GetSelectedGroupId()
+    {
+        return Guid.TryParse(_form.SelectedGroupId, out var parsed)
+            ? parsed
+            : null;
+    }
+
+    private sealed class ScheduleImportForm
+    {
+        [Required]
+        public Guid ScenarioId { get; set; }
+
+        [Required]
+        [StringLength(200)]
+        public string Name { get; set; } = "Schedule import";
+
+        public DateOnly TargetStart { get; set; } = DateOnly.FromDateTime(DateTime.UtcNow.Date);
+
+        public DateOnly TargetEnd { get; set; } = DateOnly.FromDateTime(DateTime.UtcNow.Date);
+
+        public string? SelectedGroupId { get; set; }
+            = string.Empty;
+
+        public bool RemoveExisting { get; set; }
+            = true;
+
+        public bool ApplyBusinessRules { get; set; }
+            = true;
+
+        public string ComparisonFields { get; set; } = "flight_number,departure,arrival";
+    }
+}

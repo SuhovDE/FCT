@@ -1,0 +1,280 @@
+@page "/imports/statistics"
+@using System.ComponentModel.DataAnnotations
+@using AeroNexus.ForecastStudio.Domain.Entities
+@using AeroNexus.ForecastStudio.Domain.Services
+@using AeroNexus.ForecastStudio.Infrastructure
+@using Microsoft.AspNetCore.Components.Forms
+@using Microsoft.EntityFrameworkCore
+@inject AeroNexusDbContext DbContext
+@inject IImportService ImportService
+@inject NavigationManager Navigation
+
+<PageTitle>Statistical Data Import</PageTitle>
+
+<h1 class="mb-4">Statistical Data Import</h1>
+
+@if (_loading)
+{
+    <div class="alert alert-info">Processing import...</div>
+}
+else if (!_scenarios.Any())
+{
+    <div class="alert alert-warning">Create a scenario before launching the statistical import wizard.</div>
+}
+else
+{
+    <EditForm Model="_form" OnValidSubmit="HandleNextAsync">
+        <DataAnnotationsValidator />
+        <ValidationSummary />
+
+        @switch (_step)
+        {
+            case 1:
+                <div class="card mb-3">
+                    <div class="card-header">Step 1 · Import details</div>
+                    <div class="card-body">
+                        <div class="mb-3">
+                            <label for="scenario" class="form-label">Scenario</label>
+                            <InputSelect id="scenario" class="form-select" @bind-Value="SelectedScenarioId">
+                                @foreach (var scenario in _scenarios)
+                                {
+                                    <option value="@scenario.Id">@scenario.Name (@scenario.StartDate:yyyy-MM-dd → @scenario.EndDate:yyyy-MM-dd)</option>
+                                }
+                            </InputSelect>
+                        </div>
+                        <div class="mb-3">
+                            <label for="name" class="form-label">Import name</label>
+                            <InputText id="name" class="form-control" @bind-Value="_form.Name" />
+                        </div>
+                    </div>
+                </div>
+                break;
+            case 2:
+                <div class="card mb-3">
+                    <div class="card-header">Step 2 · Upload data</div>
+                    <div class="card-body">
+                        <p>Upload the statistical dataset (.csv or .zip). The wizard validates naming rules and core columns.</p>
+                        <InputFile OnChange="HandleFileSelectedAsync" />
+                        @if (_validationErrors.Any())
+                        {
+                            <div class="alert alert-danger mt-3">
+                                <p class="fw-bold">Validation issues</p>
+                                <ul>
+                                    @foreach (var error in _validationErrors)
+                                    {
+                                        <li>@error</li>
+                                    }
+                                </ul>
+                            </div>
+                        }
+                        else if (_fileName is not null)
+                        {
+                            <div class="alert alert-success mt-3">File <strong>@_fileName</strong> passed validation.</div>
+                        }
+                    </div>
+                </div>
+                break;
+            case 3:
+                <div class="card mb-3">
+                    <div class="card-header">Step 3 · Column mapping</div>
+                    <div class="card-body">
+                        <p>Review the detected columns and adjust target fields if necessary.</p>
+                        <div class="table-responsive">
+                            <table class="table table-striped">
+                                <thead>
+                                    <tr>
+                                        <th>Source column</th>
+                                        <th>Target field</th>
+                                        <th>Required</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    @foreach (var mapping in _columnMappings)
+                                    {
+                                        <tr>
+                                            <td>@mapping.SourceColumn</td>
+                                            <td>
+                                                <InputText class="form-control" @bind-Value="mapping.TargetField" />
+                                            </td>
+                                            <td>
+                                                <input type="checkbox" class="form-check-input" disabled value="true" checked="@mapping.IsRequired" />
+                                            </td>
+                                        </tr>
+                                    }
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+                break;
+            case 4:
+                <div class="card mb-3">
+                    <div class="card-header">Step 4 · Confirm &amp; import</div>
+                    <div class="card-body">
+                        <p>
+                            Import name <strong>@_form.Name</strong> is ready for scenario
+                            <strong>@_scenarios.First(s => s.Id == _form.ScenarioId).Name</strong>.
+                        </p>
+                        <p>
+                            Columns mapped: @_columnMappings.Count. Once you confirm, statistics are stored and
+                            made available as comparison baselines.
+                        </p>
+                    </div>
+                </div>
+                break;
+        }
+
+        <div class="d-flex justify-content-between">
+            <button class="btn btn-outline-secondary" type="button" disabled="@(_step == 1)" @onclick="PrevStep">Back</button>
+            <button class="btn btn-primary" type="submit">@(_step == 4 ? "Start import" : "Continue")</button>
+        </div>
+    </EditForm>
+}
+
+@code {
+    private readonly ImportWizardForm _form = new();
+    private readonly List<Scenario> _scenarios = new();
+    private readonly List<ImportColumnMapping> _columnMappings = new();
+    private readonly List<string> _validationErrors = new();
+
+    private int _step = 1;
+    private bool _loading;
+    private ImportJob? _importJob;
+    private byte[]? _fileBytes;
+    private string? _fileName;
+
+    private Guid SelectedScenarioId
+    {
+        get => _form.ScenarioId;
+        set
+        {
+            if (_form.ScenarioId == value)
+            {
+                return;
+            }
+
+            _form.ScenarioId = value;
+            _importJob = null;
+            _step = 1;
+        }
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        _scenarios.AddRange(await DbContext.Scenarios.OrderBy(s => s.Name).ToListAsync());
+        if (_scenarios.Any())
+        {
+            _form.ScenarioId = _scenarios.First().Id;
+        }
+    }
+
+    private async Task HandleNextAsync()
+    {
+        if (_step == 1)
+        {
+            await EnsureImportJobAsync();
+            _step = 2;
+            return;
+        }
+
+        if (_step == 2)
+        {
+            if (_validationErrors.Any() || _fileBytes is null || _importJob is null)
+            {
+                return;
+            }
+
+            await using var stream = new MemoryStream(_fileBytes);
+            var mappings = await ImportService.AnalyseColumnsAsync(_importJob, stream, CancellationToken.None);
+            _columnMappings.Clear();
+            _columnMappings.AddRange(mappings);
+            _step = 3;
+            return;
+        }
+
+        if (_step == 3)
+        {
+            if (_importJob is null)
+            {
+                return;
+            }
+
+            await ImportService.PersistColumnMappingsAsync(_importJob.Id, _columnMappings, CancellationToken.None);
+            _step = 4;
+            return;
+        }
+
+        if (_step == 4 && _importJob is not null && _fileBytes is not null && _fileName is not null)
+        {
+            _loading = true;
+            await using var stream = new MemoryStream(_fileBytes);
+            await ImportService.CommitStatisticalImportAsync(_importJob.Id, stream, _fileName, CancellationToken.None);
+            _loading = false;
+            Navigation.NavigateTo("/imports", true);
+        }
+    }
+
+    private async Task HandleFileSelectedAsync(InputFileChangeEventArgs args)
+    {
+        _validationErrors.Clear();
+        if (args.File is null)
+        {
+            _fileBytes = null;
+            _fileName = null;
+            return;
+        }
+
+        var file = args.File;
+        await using var buffer = new MemoryStream();
+        await file.OpenReadStream(long.MaxValue).CopyToAsync(buffer);
+        _fileBytes = buffer.ToArray();
+        _fileName = file.Name;
+
+        if (_importJob is null)
+        {
+            await EnsureImportJobAsync();
+        }
+
+        if (_importJob is null)
+        {
+            return;
+        }
+
+        await using var stream = new MemoryStream(_fileBytes);
+        var result = await ImportService.ValidateStatisticalImportAsync(_importJob, stream, _fileName, CancellationToken.None);
+        if (!result.IsValid)
+        {
+            _validationErrors.AddRange(result.Errors);
+        }
+    }
+
+    private async Task EnsureImportJobAsync()
+    {
+        if (_importJob is not null)
+        {
+            return;
+        }
+
+        _importJob = await ImportService.CreateImportJobAsync(_form.ScenarioId, _form.Name, ImportType.StatisticalData, CancellationToken.None);
+    }
+
+    private void PrevStep()
+    {
+        if (_step == 1)
+        {
+            return;
+        }
+
+        _step--;
+    }
+
+    private sealed class ImportWizardForm
+    {
+        [Required]
+        public Guid ScenarioId { get; set; }
+
+        [Required]
+        [StringLength(200)]
+        public string Name { get; set; } = "Statistical import";
+    }
+}
